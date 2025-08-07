@@ -1,26 +1,21 @@
 # services/destinations.py
 from __future__ import annotations
 
+import difflib
 import requests
 from datetime import datetime, timedelta
-
-# put near the top of destinations.py
-import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-import difflib
-
-# session with retries
+# ---------- HTTP session with retries ----------
 _session = requests.Session()
 _retries = Retry(total=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
 _session.mount("https://", HTTPAdapter(max_retries=_retries))
 _session.mount("http://", HTTPAdapter(max_retries=_retries))
 
-
 WIKI_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
 
-# --- Minimal seed data for MVP. Expand later or replace with live sources. ---
+# ---------- Minimal seed data (expand later) ----------
 STATE_TO_DESTINATIONS: dict[str, list[str]] = {
     "arizona": [
         "Grand Canyon",
@@ -51,7 +46,7 @@ STATE_TO_DESTINATIONS: dict[str, list[str]] = {
     ],
 }
 
-# --- Simple heuristic defaults (extend/replace later with smarter logic) ---
+# ---------- Defaults (can be replaced by smarter logic later) ----------
 DEFAULT_ACTIVITIES: dict[str, list[str]] = {
     "Sedona": ["Hiking", "Jeep tours", "Photography"],
     "Grand Canyon": ["Hiking", "Rim viewpoints", "Rafting"],
@@ -66,9 +61,10 @@ DEFAULT_BEST_TIME: dict[str, str] = {
     "Flagstaff": "Year-round; skiing Dec–Mar",
 }
 
-# --- In-memory cache for place details (very lightweight) ---
+# ---------- Simple in-memory cache ----------
 _CACHE: dict[str, dict] = {}
 _TTL = timedelta(hours=24)
+
 
 def wiki_enrich(title: str) -> dict | None:
     """
@@ -91,15 +87,18 @@ def wiki_enrich(title: str) -> dict | None:
     except Exception:
         return None
 
+
 def get_weather_brief(lat: float, lon: float) -> str | None:
     """
-    Returns a tiny “This weekend: 88°/65°, clear.” string if possible.
+    Returns a tiny “This weekend: 88°/65°.” string if possible.
     Uses Open-Meteo (free, no key). Fails silently.
     """
     try:
         url = (
-          "https://api.open-meteo.com/v1/forecast"
-          f"?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,weathercode&forecast_days=3&timezone=auto"
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}"
+            "&daily=temperature_2m_max,temperature_2m_min,weathercode"
+            "&forecast_days=3&timezone=auto"
         )
         r = _session.get(url, timeout=6)
         if r.status_code != 200:
@@ -109,43 +108,26 @@ def get_weather_brief(lat: float, lon: float) -> str | None:
         tmin = d.get("temperature_2m_min", [])
         if not (tmax and tmin):
             return None
-        # Day 1 snapshot
         max1, min1 = round(tmax[0]), round(tmin[0])
         return f"This weekend: {max1}°/{min1}°."
     except Exception:
         return None
+
 
 def search_places(query: str, limit: int = 8) -> list[str]:
     """
     Fuzzy search across all known destinations in STATE_TO_DESTINATIONS.
     Returns a list of place names.
     """
-    q = (query or "").strip()
+    q = (query or "").strip().lower()
     if not q:
         return []
     all_places = []
     for arr in STATE_TO_DESTINATIONS.values():
         all_places.extend(arr)
-    # get_close_matches is case-sensitive; use a case-insensitive map
     mapping = {p.lower(): p for p in all_places}
-    matches = difflib.get_close_matches(q.lower(), list(mapping.keys()), n=limit, cutoff=0.5)
+    matches = difflib.get_close_matches(q, list(mapping.keys()), n=limit, cutoff=0.5)
     return [mapping[m] for m in matches]
-
-def wiki_summary(title: str) -> str | None:
-    """Fetch a short summary for a place from Wikipedia."""
-    if not title:
-        return None
-    try:
-        url = WIKI_SUMMARY_URL.format(requests.utils.quote(title))
-        resp = _session.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            # Prefer 'extract' if present, else 'description'
-            return data.get("extract") or data.get("description")
-    except Exception:
-        # Silently ignore network/JSON errors for resiliency
-        pass
-    return None
 
 
 def get_top_destinations_by_state(state: str) -> list[str]:
@@ -154,43 +136,6 @@ def get_top_destinations_by_state(state: str) -> list[str]:
     return STATE_TO_DESTINATIONS.get(key, [])
 
 
-def get_place_details(name: str) -> dict | None:
-    name = (name or "").strip()
-    if not name:
-        return None
-
-    enriched = wiki_enrich(name) or {}
-    summary = enriched.get("summary")
-    image_url = enriched.get("image_url")
-    lat, lon = enriched.get("lat"), enriched.get("lon")
-
-    best_time = DEFAULT_BEST_TIME.get(name) or "Varies by season; spring and fall are often ideal."
-    activities = DEFAULT_ACTIVITIES.get(name, ["Sightseeing", "Local tours", "Photography"])
-
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(name)}"
-
-    weather = None
-    if lat is not None and lon is not None:
-        weather = get_weather_brief(lat, lon)  # may be None; that’s fine
-
-    return {
-        "name": name,
-        "summary": summary or f"{name} is a notable destination. More details coming soon.",
-        "best_time": best_time,
-        "activities": activities,
-        "image_url": image_url,         # may be None
-        "maps_url": maps_url,           # always present
-        "weather": weather              # may be None
-    }
-
-
-
-def get_destinations(state: str) -> list[str]:
-    """Alias kept for compatibility with earlier imports."""
-    return get_top_destinations_by_state(state)
-
-
-# ----------------------- Lightweight caching helpers ----------------------- #
 def _cache_key(name: str) -> str:
     return (name or "").strip().lower()
 
@@ -211,15 +156,52 @@ def _cache_set(name: str, data: dict) -> None:
     _CACHE[key] = {"data": data, "ts": datetime.utcnow()}
 
 
-def get_place_details_cached(name: str) -> dict | None:
-    """Cached variant of get_place_details to reduce repeat Wikipedia calls."""
+def get_place_details(name: str) -> dict | None:
+    """Return enriched place details including wiki summary, image, maps link and optional weather."""
+    name = (name or "").strip()
+    if not name:
+        return None
+
+    # cache check
     hit = _cache_get(name)
     if hit:
         return hit
-    data = get_place_details(name)
-    if data:
-        _cache_set(name, data)
+
+    enriched = wiki_enrich(name) or {}
+    summary = enriched.get("summary")
+    image_url = enriched.get("image_url")
+    lat, lon = enriched.get("lat"), enriched.get("lon")
+
+    best_time = DEFAULT_BEST_TIME.get(name) or "Varies by season; spring and fall are often ideal."
+    activities = DEFAULT_ACTIVITIES.get(name, ["Sightseeing", "Local tours", "Photography"])
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(name)}"
+
+    weather = None
+    if lat is not None and lon is not None:
+        weather = get_weather_brief(lat, lon)  # may be None; that’s fine
+
+    data = {
+        "name": name,
+        "summary": summary or f"{name} is a notable destination. More details coming soon.",
+        "best_time": best_time,
+        "activities": activities,
+        "image_url": image_url,   # may be None
+        "maps_url": maps_url,     # always present
+        "weather": weather        # may be None
+    }
+
+    _cache_set(name, data)
     return data
+
+
+def get_destinations(state: str) -> list[str]:
+    """Alias kept for compatibility with earlier imports."""
+    return get_top_destinations_by_state(state)
+
+
+def get_place_details_cached(name: str) -> dict | None:
+    """Explicit cached accessor (not strictly needed because get_place_details already caches)."""
+    return get_place_details(name)
 
 
 def get_destinations_with_details(state: str) -> list[dict]:
@@ -233,7 +215,7 @@ def get_destinations_with_details(state: str) -> list[dict]:
     places = get_top_destinations_by_state(state)
     results: list[dict] = []
     for place in places:
-        details = get_place_details_cached(place)
+        details = get_place_details(place)
         if details:
             results.append(
                 {
@@ -252,4 +234,5 @@ __all__ = [
     "get_destinations",
     "get_place_details_cached",
     "get_destinations_with_details",
+    "search_places",
 ]
