@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from services.destinations import get_top_destinations_by_state, get_place_details
+from services.destinations import search_places
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["https://apex.oracle.com"]}})
@@ -20,6 +21,12 @@ def home():
         }
     }), 200
 
+@app.get("/search")
+def search():
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"results": []}), 200
+    return jsonify({"results": search_places(q)}), 200
 
 @app.get("/health")
 def health():

@@ -9,6 +9,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import difflib
+
 # session with retries
 _session = requests.Session()
 _retries = Retry(total=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
@@ -68,6 +70,66 @@ DEFAULT_BEST_TIME: dict[str, str] = {
 _CACHE: dict[str, dict] = {}
 _TTL = timedelta(hours=24)
 
+def wiki_enrich(title: str) -> dict | None:
+    """
+    Returns { summary, image_url?, lat?, lon? } for a page if available.
+    """
+    if not title:
+        return None
+    try:
+        url = WIKI_SUMMARY_URL.format(requests.utils.quote(title))
+        resp = _session.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return {
+            "summary": data.get("extract") or data.get("description"),
+            "image_url": (data.get("thumbnail") or {}).get("source"),
+            "lat": (data.get("coordinates") or {}).get("lat"),
+            "lon": (data.get("coordinates") or {}).get("lon"),
+        }
+    except Exception:
+        return None
+
+def get_weather_brief(lat: float, lon: float) -> str | None:
+    """
+    Returns a tiny “This weekend: 88°/65°, clear.” string if possible.
+    Uses Open-Meteo (free, no key). Fails silently.
+    """
+    try:
+        url = (
+          "https://api.open-meteo.com/v1/forecast"
+          f"?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,weathercode&forecast_days=3&timezone=auto"
+        )
+        r = _session.get(url, timeout=6)
+        if r.status_code != 200:
+            return None
+        d = r.json().get("daily", {})
+        tmax = d.get("temperature_2m_max", [])
+        tmin = d.get("temperature_2m_min", [])
+        if not (tmax and tmin):
+            return None
+        # Day 1 snapshot
+        max1, min1 = round(tmax[0]), round(tmin[0])
+        return f"This weekend: {max1}°/{min1}°."
+    except Exception:
+        return None
+
+def search_places(query: str, limit: int = 8) -> list[str]:
+    """
+    Fuzzy search across all known destinations in STATE_TO_DESTINATIONS.
+    Returns a list of place names.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    all_places = []
+    for arr in STATE_TO_DESTINATIONS.values():
+        all_places.extend(arr)
+    # get_close_matches is case-sensitive; use a case-insensitive map
+    mapping = {p.lower(): p for p in all_places}
+    matches = difflib.get_close_matches(q.lower(), list(mapping.keys()), n=limit, cutoff=0.5)
+    return [mapping[m] for m in matches]
 
 def wiki_summary(title: str) -> str | None:
     """Fetch a short summary for a place from Wikipedia."""
@@ -93,24 +155,34 @@ def get_top_destinations_by_state(state: str) -> list[str]:
 
 
 def get_place_details(name: str) -> dict | None:
-    """Return details for a specific place."""
     name = (name or "").strip()
     if not name:
         return None
 
-    # Pull a short summary from Wikipedia (best-effort)
-    summary = wiki_summary(name)
+    enriched = wiki_enrich(name) or {}
+    summary = enriched.get("summary")
+    image_url = enriched.get("image_url")
+    lat, lon = enriched.get("lat"), enriched.get("lon")
 
-    # Attach simple defaults if available
     best_time = DEFAULT_BEST_TIME.get(name) or "Varies by season; spring and fall are often ideal."
     activities = DEFAULT_ACTIVITIES.get(name, ["Sightseeing", "Local tours", "Photography"])
+
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(name)}"
+
+    weather = None
+    if lat is not None and lon is not None:
+        weather = get_weather_brief(lat, lon)  # may be None; that’s fine
 
     return {
         "name": name,
         "summary": summary or f"{name} is a notable destination. More details coming soon.",
         "best_time": best_time,
         "activities": activities,
+        "image_url": image_url,         # may be None
+        "maps_url": maps_url,           # always present
+        "weather": weather              # may be None
     }
+
 
 
 def get_destinations(state: str) -> list[str]:
