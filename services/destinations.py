@@ -1,4 +1,3 @@
-# services/destinations.py
 import os
 import requests
 from requests.adapters import HTTPAdapter
@@ -9,14 +8,14 @@ OPEN_TRIPMAP_KEY = os.getenv("OPEN_TRIPMAP_KEY", "").strip()
 OTM_BASE = "https://api.opentripmap.com/0.1/en/places"
 GEOCODE_URL = "https://nominatim.openstreetmap.org/search"
 
-# ===== HTTP session with retries & UA =====
+# ===== HTTP session with retries =====
 _session = requests.Session()
 _session.headers.update({"User-Agent": "TripMate/1.0 (support@example.com)"})
 _retries = Retry(total=3, backoff_factor=0.4, status_forcelist=(500, 502, 503, 504))
 _session.mount("https://", HTTPAdapter(max_retries=_retries))
 _session.mount("http://", HTTPAdapter(max_retries=_retries))
 
-# ===== US State list =====
+# ===== US States =====
 US_STATES = [
     "alabama","alaska","arizona","arkansas","california","colorado","connecticut",
     "delaware","florida","georgia","hawaii","idaho","illinois","indiana","iowa",
@@ -28,8 +27,8 @@ US_STATES = [
     "wisconsin","wyoming"
 ]
 
-# ===== Helper: Geocode a state =====
-def _geocode_place(q: str) -> tuple[float, float] | None:
+# ===== Helper functions =====
+def _geocode_place(q: str):
     try:
         r = _session.get(GEOCODE_URL, params={"q": f"{q}, USA", "format": "json", "limit": 1}, timeout=8)
         r.raise_for_status()
@@ -40,17 +39,7 @@ def _geocode_place(q: str) -> tuple[float, float] | None:
     except Exception:
         return None
 
-# ===== Fetch top places for a state =====
-def get_top_places(state: str, limit: int = 12, radius_km: int = 250) -> list[str]:
-    """Fetch live attractions for a given US state."""
-    if not OPEN_TRIPMAP_KEY:
-        return []
-
-    coords = _geocode_place(state)
-    if not coords:
-        return []
-    lat, lon = coords
-
+def _otm_search(lat: float, lon: float, limit: int = 12, radius_km: int = 250):
     try:
         r = _session.get(
             f"{OTM_BASE}/radius",
@@ -58,7 +47,7 @@ def get_top_places(state: str, limit: int = 12, radius_km: int = 250) -> list[st
                 "apikey": OPEN_TRIPMAP_KEY,
                 "lat": lat,
                 "lon": lon,
-                "radius": radius_km * 1000,  # meters
+                "radius": radius_km * 1000,
                 "limit": limit,
                 "rate": 2,
                 "kinds": "natural,interesting_places,parks,beaches,museums,historic,architecture",
@@ -67,7 +56,7 @@ def get_top_places(state: str, limit: int = 12, radius_km: int = 250) -> list[st
             timeout=10,
         )
         r.raise_for_status()
-        names: list[str] = []
+        names = []
         for row in r.json():
             name = (row or {}).get("name")
             if name and name not in names:
@@ -76,16 +65,24 @@ def get_top_places(state: str, limit: int = 12, radius_km: int = 250) -> list[st
     except Exception:
         return []
 
-# ===== Fetch attractions for all states =====
-def get_all_states_with_places(limit: int = 12) -> dict[str, list[str]]:
-    """Return a dict of {state: [places]} for all US states."""
-    results = {}
-    for state in US_STATES:
-        results[state] = get_top_places(state, limit=limit)
-    return results
+# ===== Main public function =====
+def get_top_places(state: str, limit: int = 12):
+    """
+    Get top attractions for a given US state using OpenTripMap.
+    Falls back to empty list if API key not set or fails.
+    """
+    if not OPEN_TRIPMAP_KEY:
+        return []
+
+    coords = _geocode_place(state)
+    if not coords:
+        return []
+    lat, lon = coords
+    return _otm_search(lat, lon, limit)
 
 # ===== Alias for backward compatibility =====
-def get_top_destinations_by_state(state: str, limit: int = 12) -> list[str]:
-    """Alias so old code using get_top_destinations_by_state keeps working."""
+def get_top_destinations_by_state(state: str, limit: int = 12):
+    """
+    Backward compatibility for old code expecting get_top_destinations_by_state.
+    """
     return get_top_places(state, limit)
-
