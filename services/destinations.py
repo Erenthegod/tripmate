@@ -84,10 +84,8 @@ def get_all_states_with_places(limit: int = 12) -> dict[str, list[str]]:
         results[state] = get_top_places(state, limit=limit)
     return results
 
-# ===== Backward compatibility wrapper =====
-def get_destinations(state: str, limit: int = 12) -> list[str]:
-    """
-    Backward-compatible function for older code.
-    Behaves the same as get_top_places().
-    """
+# ===== Alias for backward compatibility =====
+def get_top_destinations_by_state(state: str, limit: int = 12) -> list[str]:
+    """Alias so old code using get_top_destinations_by_state keeps working."""
     return get_top_places(state, limit)
+
