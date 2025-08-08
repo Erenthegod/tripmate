@@ -1,8 +1,11 @@
 # app.py
+from __future__ import annotations
+
+import os
+import traceback
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# your modules
 from services.destinations import (
     get_top_destinations_by_state,
     get_destinations_with_details,
@@ -11,12 +14,9 @@ from services.destinations import (
 )
 from services.bot import chat_reply
 
-import requests
-import os
-
 app = Flask(__name__)
 
-# Allow calls from APEX (add other origins if you’ll test elsewhere)
+# Allow calls from APEX. Add more origins if needed.
 CORS(app, resources={r"/*": {"origins": ["https://apex.oracle.com"]}})
 
 
@@ -26,8 +26,7 @@ def home():
         "message": "Welcome to TripMate API",
         "available_endpoints": {
             "/health": "Check API health",
-            "/version": "Commit hash (Render) & feature flags",
-            "/diag": "Connectivity checks (wiki, nominatim, key presence)",
+            "/diag": "Run outbound call diagnostics",
             "/search?q=Sedona": "Fuzzy search places",
             "/destinations?state=Arizona": "Top destinations for a state",
             "/destinations_full?state=Arizona": "Destinations + compact details",
@@ -37,69 +36,76 @@ def home():
     }), 200
 
 
-@app.get("/health")
-def health():
-    return jsonify({"status": "ok"}), 200
-
-
 @app.get("/version")
 def version():
     return jsonify({
         "app": "tripmate",
         "commit": os.getenv("RENDER_GIT_COMMIT") or "dev",
-        "has_search": True
     }), 200
+
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
 
 
 @app.get("/diag")
 def diag():
-    """Lightweight diagnostics to debug Render/network issues."""
-    out = {"ok": True, "OPEN_TRIPMAP_KEY": bool(os.getenv("OPEN_TRIPMAP_KEY"))}
-    try:
-        r = requests.get(
-            "https://en.wikipedia.org/api/rest_v1/page/summary/Sedona",
-            timeout=5
-        )
-        out["wiki_ok"] = (r.status_code == 200)
-    except Exception as e:
-        out["wiki_ok"] = False
-        out["wiki_err"] = str(e)
+    """Quick diagnostics to verify outbound APIs & env."""
+    import requests
+    out = {"ok": True, "checks": {}}
 
     try:
-        r = requests.get(
+        w = requests.get("https://en.wikipedia.org/api/rest_v1/page/summary/Sedona", timeout=6)
+        out["checks"]["wiki_ok"] = (w.status_code == 200)
+        if not out["checks"]["wiki_ok"]:
+            out["ok"] = False
+            out["checks"]["wiki_status"] = w.status_code
+    except Exception as e:
+        out["ok"] = False
+        out["checks"]["wiki_ok"] = False
+        out["checks"]["wiki_err"] = str(e)
+
+    try:
+        n = requests.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": "Arizona, USA", "format": "json", "limit": 1},
-            headers={"User-Agent": "TripMate/1.0"},
-            timeout=5
+            params={"q": "Sedona", "format": "json", "limit": 1},
+            headers={"User-Agent": "TripMate/1.0 (support@example.com)"},
+            timeout=6
         )
-        out["nominatim_ok"] = (r.status_code == 200)
+        out["checks"]["nominatim_ok"] = (n.status_code == 200)
+        if not out["checks"]["nominatim_ok"]:
+            out["ok"] = False
+            out["checks"]["nominatim_status"] = n.status_code
     except Exception as e:
-        out["nominatim_ok"] = False
-        out["nominatim_err"] = str(e)
+        out["ok"] = False
+        out["checks"]["nominatim_ok"] = False
+        out["checks"]["nominatim_err"] = str(e)
 
+    out["checks"]["opentripmap_key_present"] = bool(os.getenv("OPEN_TRIPMAP_KEY"))
     return jsonify(out), 200
 
 
 @app.post("/chat")
 def chat():
-    """Chat endpoint used by APEX. Never throws HTML; always JSON."""
+    """Chat endpoint consumed by APEX."""
     try:
         data = request.get_json(silent=True) or {}
         message = (data.get("message") or "").strip()
         session_id = (data.get("session_id") or "guest").strip()
-
         if not message:
-            return jsonify({"message": "Ask me about a state or a place."}), 200
+            return jsonify({"error": "empty_message"}), 400
 
-        resp = chat_reply(message, session_id=session_id)
-        # chat_reply should return a dict like {"message": "...", "suggestions": [...]}
-        if not isinstance(resp, dict):
-            resp = {"message": str(resp)}
-        return jsonify(resp), 200
+        ans = chat_reply(message, session_id=session_id)  # dict with "message", "suggestions" etc.
+        return jsonify(ans), 200
 
     except Exception as e:
-        app.logger.exception("chat() failed")
-        return jsonify({"error": "server_error", "detail": str(e)}), 500
+        app.logger.exception("chat error")
+        return jsonify({
+            "error": "server_error",
+            "detail": str(e),
+            "trace": traceback.format_exc()
+        }), 500
 
 
 @app.get("/search")
@@ -124,10 +130,7 @@ def destinations_full():
     state = (request.args.get("state") or "").strip()
     if not state:
         return jsonify({"error": "Missing required query param: state"}), 400
-    return jsonify({
-        "state": state,
-        "results": get_destinations_with_details(state)
-    }), 200
+    return jsonify({"state": state, "results": get_destinations_with_details(state)}), 200
 
 
 @app.get("/place")
@@ -142,5 +145,5 @@ def place():
 
 
 if __name__ == "__main__":
-    # Local dev only; Render runs via gunicorn
+    # Local dev only; Render uses gunicorn
     app.run(host="0.0.0.0", port=5000, debug=True)
