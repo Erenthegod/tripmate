@@ -8,9 +8,28 @@ from services.destinations import (
     search_places,
 )
 
+from services.bot import chat_reply
+
 app = Flask(__name__)
 # Restrict CORS to APEX (adjust if you’ll call from elsewhere)
 CORS(app, resources={r"/*": {"origins": ["https://apex.oracle.com"]}})
+
+
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
+
+@app.post("/chat")
+def chat():
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    session_id = (data.get("session_id") or "").strip()
+    if not message:
+        return jsonify({"message": "Ask me about a state or a place."}), 200
+    ans = chat_reply(message, session_id=session_id)
+    return jsonify(ans), 200
+
 
 
 @app.get("/")
