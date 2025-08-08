@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 from services.destinations import (
-    get_top_destinations_by_state,
+    get_top_places as get_top_destinations_by_state,
     get_destinations_with_details,
     get_place_details,
     search_places,
